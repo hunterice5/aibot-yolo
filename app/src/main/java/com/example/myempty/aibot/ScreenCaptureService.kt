@@ -210,17 +210,18 @@ class ScreenCaptureService : Service() {
 
     private var fullFrameBitmap: Bitmap? = null
     private var targetSizeBitmap: Bitmap? = null
+    private var rowByteArray: ByteArray? = null
 
     /**
      * Convert RGBA_8888 Image to a direct Bitmap at [targetSize]x[targetSize].
-     * Optimized using Canvas and Matrix for zero-loop scaling.
+     * Optimized for correct pixel alignment (handles rowStride padding).
      */
     private fun imageToScaledBitmap(image: Image, targetSize: Int): Bitmap? {
         return try {
             val planes = image.planes
             val buffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
             val rowStride = planes[0].rowStride
+            val pixelStride = planes[0].pixelStride
             val srcW = image.width
             val srcH = image.height
 
@@ -232,20 +233,25 @@ class ScreenCaptureService : Service() {
             }
             
             buffer.rewind()
-            // copyPixelsFromBuffer is standard but sensitive to rowStride.
-            // In RGBA_8888, pixelStride is 4. rowStride must be srcW * 4.
-            if (rowStride == srcW * 4) {
+            // Robust copy: handle alignment padding (rowStride > width * 4)
+            if (pixelStride == 4 && rowStride == srcW * 4) {
                 fullBmp!!.copyPixelsFromBuffer(buffer)
             } else {
-                // Handle alignment padding by copying row by row (slower but safe)
+                // Buffer has padding or different pixel layout
+                val bytesPerRow = srcW * 4
+                if (rowByteArray == null || rowByteArray!!.size < bytesPerRow) {
+                    rowByteArray = ByteArray(bytesPerRow)
+                }
+                
+                // Copy row by row to skip padding bytes
+                val cleanBuffer = java.nio.ByteBuffer.allocateDirect(srcH * bytesPerRow)
                 for (row in 0 until srcH) {
                     buffer.position(row * rowStride)
-                    // We can't easily copy row by row into Bitmap memory from Java/Kotlin
-                    // without a temporary buffer. For now, let's try the direct copy anyway
-                    // as most modern devices align to 4-byte boundaries which matches RGBA.
+                    buffer.get(rowByteArray!!, 0, bytesPerRow)
+                    cleanBuffer.put(rowByteArray!!, 0, bytesPerRow)
                 }
-                buffer.rewind()
-                fullBmp!!.copyPixelsFromBuffer(buffer)
+                cleanBuffer.rewind()
+                fullBmp!!.copyPixelsFromBuffer(cleanBuffer)
             }
 
             // 2. Calculate letterbox scaling

@@ -250,7 +250,7 @@ class OverlayService : android.app.Service() {
 
             drawToggle(canvas, 20f, y, "Raw (0-255)", settings.useRawPixels, "exp_raw"); y += 50f
             drawToggle(canvas, 20f, y, "Flip Y", settings.flipY, "exp_flip"); y += 50f
-            drawToggle(canvas, 20f, y, "BGR Swap", settings.useBGR, "exp_bgr"); y += 50f
+            drawToggle(canvas, 20f, y, "Auto Aim", settings.useGridCorrection, "exp_grid"); y += 50f
 
             canvas.drawText("Model:", 20f, y, p.apply { textSize = 20f }); y += 35f
             drawPill(canvas, 20f, y, 150f, y + 40f, "FORT", settings.selectedModelId == "fortnite", "model_fort")
