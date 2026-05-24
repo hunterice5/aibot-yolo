@@ -111,115 +111,115 @@ class GameAiEngine(private val appCtx: android.content.Context) {
         val screenCenterX = realW / 2f
         val screenCenterY = realH / 2f
 
-        while (isRunning) {
-            val bitmap = synchronized(frameLock) {
-                val b = lastBitmap
-                lastBitmap = null
-                b
-            }
+        try {
+            while (isRunning) {
+                val bitmap = synchronized(frameLock) {
+                    val b = lastBitmap
+                    lastBitmap = null
+                    b
+                }
 
-            if (bitmap != null) {
-                val startTime = System.currentTimeMillis()
-                val overlayS = OverlayService.overlayInstance?.settings
-                
-                val liveSettings = settings.copy(
-                    confidenceThreshold = overlayS?.confidenceThreshold ?: settings.confidenceThreshold,
-                    useRawPixels = overlayS?.useRawPixels ?: settings.useRawPixels,
-                    useBGR = overlayS?.useBGR ?: settings.useBGR,
-                    flipY = overlayS?.flipY ?: settings.flipY,
-                    useGridCorrection = overlayS?.useGridCorrection ?: settings.useGridCorrection,
-                    fovFraction = overlayS?.fovFraction ?: settings.fovFraction
-                )
-
-                coordinateMapper = coordinateMapper?.copy(flipY = liveSettings.flipY)
-
-                val detections = inferenceService.runInference(bitmap, liveSettings)
-                
-                val lbOffX = com.example.myempty.aibot.ScreenCaptureService.letterboxOffsetX.toFloat()
-                val lbOffY = com.example.myempty.aibot.ScreenCaptureService.letterboxOffsetY.toFloat()
-                val lbScale = com.example.myempty.aibot.ScreenCaptureService.letterboxScale
-
-                val screenDetections = detections.map { det ->
-                    val capX = (det.x - lbOffX) / lbScale
-                    val capY = (det.y - lbOffY) / lbScale
-                    val capW = det.w / lbScale
-                    val capH = det.h / lbScale
-
-                    val screenPos = coordinateMapper?.mapToScreen(capX, capY) ?: Pair(0f, 0f)
-                    val mapper = coordinateMapper
-                    val sW = if (mapper != null) capW * (realW.toFloat() / mapper.modelWidth) else 100f
-                    val sH = if (mapper != null) capH * (realH.toFloat() / mapper.modelHeight) else 100f
-
-                    val centerX = screenPos.first
-                    val centerY = screenPos.second
+                if (bitmap != null) {
+                    val startTime = System.currentTimeMillis()
+                    val overlayS = OverlayService.overlayInstance?.settings
                     
-                    val dist = hypot(centerX - screenCenterX, centerY - screenCenterY)
-                    val fovRadius = maxOf(realW, realH) / 2f * liveSettings.fovFraction
-                    val isInsideFov = dist <= fovRadius
-
-                    ScreenDetection(
-                        x = centerX - sW / 2f,
-                        y = centerY - sH / 2f,
-                        w = sW,
-                        h = sH,
-                        confidence = det.confidence,
-                        classId = det.classId,
-                        className = det.className,
-                        isTarget = isInsideFov
+                    val liveSettings = settings.copy(
+                        confidenceThreshold = overlayS?.confidenceThreshold ?: settings.confidenceThreshold,
+                        useRawPixels = overlayS?.useRawPixels ?: settings.useRawPixels,
+                        useBGR = overlayS?.useBGR ?: settings.useBGR,
+                        flipY = overlayS?.flipY ?: settings.flipY,
+                        useGridCorrection = overlayS?.useGridCorrection ?: settings.useGridCorrection,
+                        fovFraction = overlayS?.fovFraction ?: settings.fovFraction
                     )
-                }
 
-                currentLatency = (System.currentTimeMillis() - startTime).toDouble()
-                detectionCount = screenDetections.size
-                
-                frames++
-                val now = System.currentTimeMillis()
-                if (now - lastFpsTime >= 1000) {
-                    currentFps = frames * 1000f / (now - lastFpsTime)
-                    frames = 0
-                    lastFpsTime = now
-                }
-                
-                OverlayService.currentFps = currentFps
-                OverlayService.currentLatencyMs = currentLatency
-                OverlayService.currentDetectionCount = detectionCount
-                OverlayService.overlayInstance?.updateDetections(screenDetections)
+                    coordinateMapper = coordinateMapper?.copy(flipY = liveSettings.flipY)
 
-                // ====== AUTO-AIM LOGIC START ======
-                val target = screenDetections.filter { it.isTarget }.maxByOrNull { it.confidence }
-                if (target != null) {
-                    val aimX = target.x + target.w * (coordinateMapper?.aimXRatio ?: 0.5f)
-                    val aimY = target.y + target.h * (coordinateMapper?.aimYRatio ?: 0.3f)
+                    val detections = inferenceService.runInference(bitmap, liveSettings)
                     
-                    // Log physical screen coordinates for debugging alignment
-                    if (frames % 30 == 0) {
-                        Log.i(TAG, "Aiming at Screen: X=${aimX.toInt()}, Y=${aimY.toInt()} (Target: ${target.className})")
+                    val lbOffX = com.example.myempty.aibot.ScreenCaptureService.letterboxOffsetX.toFloat()
+                    val lbOffY = com.example.myempty.aibot.ScreenCaptureService.letterboxOffsetY.toFloat()
+                    val lbScale = com.example.myempty.aibot.ScreenCaptureService.letterboxScale
+
+                    val screenDetections = detections.map { det ->
+                        val capX = (det.x - lbOffX) / lbScale
+                        val capY = (det.y - lbOffY) / lbScale
+                        val capW = det.w / lbScale
+                        val capH = det.h / lbScale
+
+                        val screenPos = coordinateMapper?.mapToScreen(capX, capY) ?: Pair(0f, 0f)
+                        val mapper = coordinateMapper
+                        val sW = if (mapper != null) capW * (realW.toFloat() / mapper.modelWidth) else 100f
+                        val sH = if (mapper != null) capH * (realH.toFloat() / mapper.modelHeight) else 100f
+
+                        val centerX = screenPos.first
+                        val centerY = screenPos.second
+                        
+                        val dist = hypot(centerX - screenCenterX, centerY - screenCenterY)
+                        val fovRadius = maxOf(realW, realH) / 2f * liveSettings.fovFraction
+                        val isInsideFov = dist <= fovRadius
+
+                        ScreenDetection(
+                            x = centerX - sW / 2f,
+                            y = centerY - sH / 2f,
+                            w = sW,
+                            h = sH,
+                            confidence = det.confidence,
+                            classId = det.classId,
+                            className = det.className,
+                            isTarget = isInsideFov
+                        )
                     }
 
-                    if (liveSettings.useGridCorrection) {
+                    currentLatency = (System.currentTimeMillis() - startTime).toDouble()
+                    detectionCount = screenDetections.size
+                    
+                    frames++
+                    val now = System.currentTimeMillis()
+                    if (now - lastFpsTime >= 1000) {
+                        currentFps = frames * 1000f / (now - lastFpsTime)
+                        frames = 0
+                        lastFpsTime = now
+                    }
+                    
+                    OverlayService.currentFps = currentFps
+                    OverlayService.currentLatencyMs = currentLatency
+                    OverlayService.currentDetectionCount = detectionCount
+                    OverlayService.overlayInstance?.updateDetections(screenDetections)
+
+                    // ====== AUTO-AIM LOGIC START ======
+                    val target = screenDetections.filter { it.isTarget }.maxByOrNull { it.confidence }
+                    if (target != null) {
+                        val aimX = target.x + target.w * (coordinateMapper?.aimXRatio ?: 0.5f)
+                        val aimY = target.y + target.h * (coordinateMapper?.aimYRatio ?: 0.3f)
+                        
+                        if (frames % 30 == 0) {
+                            Log.i(TAG, "Aiming at Screen: X=${aimX.toInt()}, Y=${aimY.toInt()}")
+                        }
+
+                        if (liveSettings.useGridCorrection) {
+                            if (touchInjector.isDown()) {
+                                touchInjector.continuousMove(aimX, aimY)
+                            } else {
+                                touchInjector.continuousDown(aimX, aimY)
+                            }
+                        }
+                    } else {
                         if (touchInjector.isDown()) {
-                            touchInjector.continuousMove(aimX, aimY)
-                        } else {
-                            touchInjector.continuousDown(aimX, aimY)
+                            touchInjector.continuousUp()
                         }
                     }
-                } else {
-                    if (touchInjector.isDown()) {
-                        touchInjector.continuousUp()
-                    }
+                    // ====== AUTO-AIM LOGIC END ======
                 }
-                // ====== AUTO-AIM LOGIC END ======
+                delay(1)
             }
-            delay(1)
+        } catch (e: CancellationException) {
+            Log.i(TAG, "Inference loop cancelled")
+        } catch (e: Exception) {
+            Log.e(TAG, "Inference loop error", e)
+        } finally {
+            if (touchInjector.isDown()) touchInjector.continuousUp()
         }
-    } catch (e: CancellationException) {
-        Log.i(TAG, "Inference loop cancelled (settings update)")
-    } catch (e: Exception) {
-        Log.e(TAG, "Inference loop error", e)
-    } finally {
-        if (touchInjector.isDown()) touchInjector.continuousUp()
     }
-}
 
     fun stop() {
         isRunning = false
