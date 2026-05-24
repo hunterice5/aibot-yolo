@@ -184,6 +184,26 @@ class GameAiEngine(private val appCtx: android.content.Context) {
                 OverlayService.currentLatencyMs = currentLatency
                 OverlayService.currentDetectionCount = detectionCount
                 OverlayService.overlayInstance?.updateDetections(screenDetections)
+
+                // ====== AUTO-AIM LOGIC START ======
+                val target = screenDetections.filter { it.isTarget }.maxByOrNull { it.confidence }
+                if (target != null) {
+                    val aimX = target.x + target.w / 2f
+                    val aimY = target.y + target.h / 2f
+                    
+                    if (liveSettings.useGridCorrection) { // Using this flag as 'AutoAim' toggle
+                        if (touchInjector.isDown()) {
+                            touchInjector.continuousMove(aimX, aimY)
+                        } else {
+                            touchInjector.continuousDown(aimX, aimY)
+                        }
+                    }
+                } else {
+                    if (touchInjector.isDown()) {
+                        touchInjector.continuousUp()
+                    }
+                }
+                // ====== AUTO-AIM LOGIC END ======
             }
             delay(1)
         }

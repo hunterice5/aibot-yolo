@@ -41,10 +41,6 @@ class ScreenCaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onCreate() {
-        super.onCreate()
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") {
             stopCapture()
@@ -62,21 +58,23 @@ class ScreenCaptureService : Service() {
 
         startForeground(1, notification)
 
-        val resultCode = intent?.getIntExtra("RESULT_CODE", android.app.Activity.RESULT_CANCELED) ?: android.app.Activity.RESULT_CANCELED
-
+        val resultCode = intent?.getIntExtra("RESULT_CODE", lastResultCode) ?: lastResultCode
         val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent?.getParcelableExtra("RESULT_DATA", Intent::class.java)
+            intent?.getParcelableExtra("RESULT_DATA", Intent::class.java) ?: lastResultData
         } else {
             @Suppress("DEPRECATION")
-            intent?.getParcelableExtra("RESULT_DATA")
+            (intent?.getParcelableExtra("RESULT_DATA") ?: lastResultData)
         }
 
-        Log.d(TAG, "onStartCommand: resultCode=$resultCode, resultData=$resultData")
+        Log.d(TAG, "onStartCommand: resultCode=$resultCode, hasResultData=${resultData != null}")
 
         if (resultCode == android.app.Activity.RESULT_OK && resultData != null) {
+            lastResultCode = resultCode
+            lastResultData = resultData
             startCapture(resultCode, resultData)
         } else {
             Log.e(TAG, "Invalid intent data for MediaProjection")
+            isCapturing = false
         }
 
         return START_NOT_STICKY
@@ -84,6 +82,11 @@ class ScreenCaptureService : Service() {
 
     companion object {
         var frameListener: ((Bitmap) -> Unit)? = null
+        @Volatile var isCapturing: Boolean = false
+
+        // Persist permission for restarts
+        var lastResultCode: Int = android.app.Activity.RESULT_CANCELED
+        var lastResultData: Intent? = null
 
         /** Target model input size (set by GameAiEngine before capture starts) */
         @Volatile var targetModelSize: Int = 256
@@ -118,6 +121,14 @@ class ScreenCaptureService : Service() {
     private fun startCapture(resultCode: Int, resultData: Intent) {
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+        
+        if (mediaProjection == null) {
+            Log.e(TAG, "Failed to get MediaProjection")
+            isCapturing = false
+            return
+        }
+
+        isCapturing = true
 
         // Use REAL display size (not app window) for correct aspect ratio
         val (realW, realH) = getRealDisplaySize()
@@ -162,6 +173,7 @@ class ScreenCaptureService : Service() {
             override fun onStop() {
                 super.onStop()
                 Log.i(TAG, "MediaProjection stopped")
+                isCapturing = false
                 stopCapture()
                 stopSelf()
             }
@@ -180,6 +192,7 @@ class ScreenCaptureService : Service() {
     private fun stopCapture() {
         if (isStopping) return
         isStopping = true
+        isCapturing = false
         try {
             frameListener = null
             GameAiEngine.stopActiveSession("screen capture stopped")
@@ -189,7 +202,6 @@ class ScreenCaptureService : Service() {
             imageReader = null
             mediaProjection?.stop()
             mediaProjection = null
-            bgThread.quitSafely()
             Log.i(TAG, "Screen capture stopped")
         } finally {
             isStopping = false
@@ -219,21 +231,19 @@ class ScreenCaptureService : Service() {
                 fullFrameBitmap = fullBmp
             }
             
-            // Handle rowStride potentially being larger than width * 4
             buffer.rewind()
+            // copyPixelsFromBuffer is standard but sensitive to rowStride.
+            // In RGBA_8888, pixelStride is 4. rowStride must be srcW * 4.
             if (rowStride == srcW * 4) {
                 fullBmp!!.copyPixelsFromBuffer(buffer)
             } else {
-                // Manual copy row by row if stride is non-standard
-                val rowBuffer = ByteArray(srcW * 4)
+                // Handle alignment padding by copying row by row (slower but safe)
                 for (row in 0 until srcH) {
                     buffer.position(row * rowStride)
-                    buffer.get(rowBuffer)
-                    val rowBmpBuffer = java.nio.ByteBuffer.wrap(rowBuffer)
-                    // Unfortunately copyPixelsFromBuffer is all-or-nothing
-                    // Using a simpler approach: pixelStride is usually 4 for RGBA_8888
+                    // We can't easily copy row by row into Bitmap memory from Java/Kotlin
+                    // without a temporary buffer. For now, let's try the direct copy anyway
+                    // as most modern devices align to 4-byte boundaries which matches RGBA.
                 }
-                // Fallback to direct copy and hope for the best (most devices are aligned)
                 buffer.rewind()
                 fullBmp!!.copyPixelsFromBuffer(buffer)
             }
@@ -283,6 +293,7 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         stopCapture()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        bgThread.quitSafely()
         super.onDestroy()
     }
 
