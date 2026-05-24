@@ -77,7 +77,7 @@ data class GameSettings(
                 "pubg" -> GameSettings(gameId = "pubg", aimMode = "head", modelInputSize = 256,
                     detectionZoneY = 0f, detectionZoneH = 1f)
                 "valorant" -> GameSettings(gameId = "valorant", aimMode = "head", modelInputSize = 256,
-                    pidKP = 1.5f, pidKD = 0.4f)
+                    confidenceThreshold = 0.73f, pidKP = 1.5f, pidKD = 0.4f)
                 "codm" -> GameSettings(gameId = "codm", aimMode = "head", modelInputSize = 256)
                 "delta" -> GameSettings(gameId = "delta", aimMode = "center", modelInputSize = 192)
                 else -> GameSettings(gameId = gameId)
