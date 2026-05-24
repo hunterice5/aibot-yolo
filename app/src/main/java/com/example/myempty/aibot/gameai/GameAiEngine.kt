@@ -188,11 +188,15 @@ class GameAiEngine(private val appCtx: android.content.Context) {
                 // ====== AUTO-AIM LOGIC START ======
                 val target = screenDetections.filter { it.isTarget }.maxByOrNull { it.confidence }
                 if (target != null) {
-                    // Use adjustable aim ratios (aimXRatio=0.5, aimYRatio=0.3)
                     val aimX = target.x + target.w * (coordinateMapper?.aimXRatio ?: 0.5f)
                     val aimY = target.y + target.h * (coordinateMapper?.aimYRatio ?: 0.3f)
                     
-                    if (liveSettings.useGridCorrection) { // Using this flag as 'AutoAim' toggle
+                    // Log physical screen coordinates for debugging alignment
+                    if (frames % 30 == 0) {
+                        Log.i(TAG, "Aiming at Screen: X=${aimX.toInt()}, Y=${aimY.toInt()} (Target: ${target.className})")
+                    }
+
+                    if (liveSettings.useGridCorrection) {
                         if (touchInjector.isDown()) {
                             touchInjector.continuousMove(aimX, aimY)
                         } else {
@@ -208,7 +212,14 @@ class GameAiEngine(private val appCtx: android.content.Context) {
             }
             delay(1)
         }
+    } catch (e: CancellationException) {
+        Log.i(TAG, "Inference loop cancelled (settings update)")
+    } catch (e: Exception) {
+        Log.e(TAG, "Inference loop error", e)
+    } finally {
+        if (touchInjector.isDown()) touchInjector.continuousUp()
     }
+}
 
     fun stop() {
         isRunning = false
