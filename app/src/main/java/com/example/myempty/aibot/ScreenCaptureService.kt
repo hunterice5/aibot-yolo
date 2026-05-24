@@ -66,8 +66,6 @@ class ScreenCaptureService : Service() {
             (intent?.getParcelableExtra("RESULT_DATA") ?: lastResultData)
         }
 
-        Log.d(TAG, "onStartCommand: resultCode=$resultCode, hasResultData=${resultData != null}")
-
         if (resultCode == android.app.Activity.RESULT_OK && resultData != null) {
             lastResultCode = resultCode
             lastResultData = resultData
@@ -84,21 +82,12 @@ class ScreenCaptureService : Service() {
         var frameListener: ((Bitmap) -> Unit)? = null
         @Volatile var isCapturing: Boolean = false
 
-        // Persist permission for restarts
         var lastResultCode: Int = android.app.Activity.RESULT_CANCELED
         var lastResultData: Intent? = null
 
-        /** Target model input size (set by GameAiEngine before capture starts) */
-        @Volatile var targetModelSize: Int = 256
-
-        /** User-adjustable capture base resolution (128-640, default=256) */
-        @Volatile var captureBaseSize: Int = 256
-
-        /** Real display dimensions (set from capture start, usable by others) */
+        @Volatile var targetModelSize: Int = 640 // Default to high res for Valo
         @Volatile var realDisplayW: Int = 0
         @Volatile var realDisplayH: Int = 0
-
-        /** Letterbox offsets to convert model coords back to capture coords */
         @Volatile var letterboxOffsetX: Int = 0
         @Volatile var letterboxOffsetY: Int = 0
         @Volatile var letterboxScale: Float = 1.0f
@@ -106,16 +95,11 @@ class ScreenCaptureService : Service() {
 
     private fun getRealDisplaySize(): Pair<Int, Int> {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        return try {
-            val display = wm.defaultDisplay
-            val realSize = Point()
-            @Suppress("DEPRECATION")
-            display.getRealSize(realSize)
-            Pair(realSize.x, realSize.y)
-        } catch (_: Exception) {
-            val dm = resources.displayMetrics
-            Pair(dm.widthPixels, dm.heightPixels)
-        }
+        val display = wm.defaultDisplay
+        val realSize = Point()
+        @Suppress("DEPRECATION")
+        display.getRealSize(realSize)
+        return Pair(realSize.x, realSize.y)
     }
 
     private fun startCapture(resultCode: Int, resultData: Intent) {
@@ -123,24 +107,20 @@ class ScreenCaptureService : Service() {
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
         
         if (mediaProjection == null) {
-            Log.e(TAG, "Failed to get MediaProjection")
             isCapturing = false
             return
         }
 
         isCapturing = true
-
-        // Use REAL display size (not app window) for correct aspect ratio
         val (realW, realH) = getRealDisplaySize()
-        realDisplayW = realW
-        realDisplayH = realH
+        realDisplayW = realW; realDisplayH = realH
         val density = resources.displayMetrics.densityDpi
 
-        // Capture with correct aspect ratio
-        val capBase = captureBaseSize.coerceIn(128, 640)
-        val capW = capBase
-        val capH = (realH * capBase / realW).coerceIn(capBase/2, capBase*2)
-        Log.i(TAG, "Capture: real=${realW}x${realH} cap=${capW}x${capH} modelSize=$targetModelSize")
+        // Match capture resolution to model resolution for maximum clarity!
+        val capW = targetModelSize
+        val capH = (realH * targetModelSize / realW)
+        
+        Log.i(TAG, "Capture High-Res: ${capW}x${capH} (Matched to Model: $targetModelSize)")
 
         imageReader = ImageReader.newInstance(capW, capH, PixelFormat.RGBA_8888, 3)
 
@@ -150,72 +130,38 @@ class ScreenCaptureService : Service() {
                 frameCount++
                 val now = System.currentTimeMillis()
 
-                // Efficiently convert Image to Bitmap at model input size
-                val modelSize = targetModelSize.coerceIn(64, 640)
-                val bmp = imageToScaledBitmap(image, modelSize)
-                if (bmp != null) {
-                    frameListener?.invoke(bmp)
-                }
+                val bmp = imageToScaledBitmap(image, targetModelSize)
+                if (bmp != null) frameListener?.invoke(bmp)
 
                 if (now - lastTime >= 1000) {
-                    val fpsVal = frameCount / ((now - lastFpsTime) / 1000f).coerceAtLeast(0.001f)
-                    Log.i(TAG, "Capture FPS: ${"%.1f".format(fpsVal)}")
-                    frameCount = 0
-                    lastTime = now
-                    lastFpsTime = now
+                    frameCount = 0; lastTime = now; lastFpsTime = now
                 }
-
                 image.close()
             }
         }, bgHandler)
 
-        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                super.onStop()
-                Log.i(TAG, "MediaProjection stopped")
-                isCapturing = false
-                stopCapture()
-                stopSelf()
-            }
-        }, null)
-
         virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "AimbotDisplay",
-            capW, capH, density,
+            "AimbotDisplay", capW, capH, density,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface, null, null
         )
-
-        Log.i(TAG, "Capture started: ${capW}x${capH} @ ${density}dpi model=${targetModelSize}x${targetModelSize}")
     }
 
     private fun stopCapture() {
         if (isStopping) return
-        isStopping = true
-        isCapturing = false
+        isStopping = true; isCapturing = false
         try {
             frameListener = null
-            GameAiEngine.stopActiveSession("screen capture stopped")
-            virtualDisplay?.release()
-            virtualDisplay = null
-            imageReader?.close()
-            imageReader = null
-            mediaProjection?.stop()
-            mediaProjection = null
-            Log.i(TAG, "Screen capture stopped")
-        } finally {
-            isStopping = false
-        }
+            virtualDisplay?.release(); virtualDisplay = null
+            imageReader?.close(); imageReader = null
+            mediaProjection?.stop(); mediaProjection = null
+        } finally { isStopping = false }
     }
 
     private var fullFrameBitmap: Bitmap? = null
     private var targetSizeBitmap: Bitmap? = null
     private var rowByteArray: ByteArray? = null
 
-    /**
-     * Convert RGBA_8888 Image to a direct Bitmap at [targetSize]x[targetSize].
-     * Optimized for correct pixel alignment (handles rowStride padding).
-     */
     private fun imageToScaledBitmap(image: Image, targetSize: Int): Bitmap? {
         return try {
             val planes = image.planes
@@ -225,7 +171,6 @@ class ScreenCaptureService : Service() {
             val srcW = image.width
             val srcH = image.height
 
-            // 1. Get or create the intermediate bitmap for the full capture
             var fullBmp = fullFrameBitmap
             if (fullBmp == null || fullBmp.width != srcW || fullBmp.height != srcH) {
                 fullBmp = Bitmap.createBitmap(srcW, srcH, Bitmap.Config.ARGB_8888)
@@ -233,17 +178,11 @@ class ScreenCaptureService : Service() {
             }
             
             buffer.rewind()
-            // Robust copy: handle alignment padding (rowStride > width * 4)
             if (pixelStride == 4 && rowStride == srcW * 4) {
                 fullBmp!!.copyPixelsFromBuffer(buffer)
             } else {
-                // Buffer has padding or different pixel layout
                 val bytesPerRow = srcW * 4
-                if (rowByteArray == null || rowByteArray!!.size < bytesPerRow) {
-                    rowByteArray = ByteArray(bytesPerRow)
-                }
-                
-                // Copy row by row to skip padding bytes
+                if (rowByteArray == null || rowByteArray!!.size < bytesPerRow) rowByteArray = ByteArray(bytesPerRow)
                 val cleanBuffer = java.nio.ByteBuffer.allocateDirect(srcH * bytesPerRow)
                 for (row in 0 until srcH) {
                     buffer.position(row * rowStride)
@@ -254,19 +193,14 @@ class ScreenCaptureService : Service() {
                 fullBmp!!.copyPixelsFromBuffer(cleanBuffer)
             }
 
-            // 2. Calculate letterbox scaling
             val scale = minOf(targetSize.toFloat() / srcW, targetSize.toFloat() / srcH)
             val scaledW = (srcW * scale).toInt()
             val scaledH = (srcH * scale).toInt()
             val offsetX = (targetSize - scaledW) / 2
             val offsetY = (targetSize - scaledH) / 2
 
-            // Store for coordinate correction in GameAiEngine
-            letterboxOffsetX = offsetX
-            letterboxOffsetY = offsetY
-            letterboxScale = scale
+            letterboxOffsetX = offsetX; letterboxOffsetY = offsetY; letterboxScale = scale
 
-            // 3. Draw onto target bitmap using Canvas
             var targetBmp = targetSizeBitmap
             if (targetBmp == null || targetBmp.width != targetSize || targetBmp.height != targetSize) {
                 targetBmp = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
@@ -274,44 +208,23 @@ class ScreenCaptureService : Service() {
             }
             
             val canvas = android.graphics.Canvas(targetBmp!!)
-            canvas.drawColor(android.graphics.Color.BLACK) // Fill padding
-
+            canvas.drawColor(android.graphics.Color.BLACK) 
             val matrix = android.graphics.Matrix()
             matrix.postScale(scale, scale)
             matrix.postTranslate(offsetX.toFloat(), offsetY.toFloat())
-            
             canvas.drawBitmap(fullBmp!!, matrix, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
-            
             targetBmp
-        } catch (e: Exception) {
-            Log.e(TAG, "imageToScaledBitmap failed", e)
-            null
-        }
-    }
-
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        stopCapture()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-        super.onTaskRemoved(rootIntent)
+        } catch (e: Exception) { null }
     }
 
     override fun onDestroy() {
-        stopCapture()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        bgThread.quitSafely()
-        super.onDestroy()
+        stopCapture(); stopForeground(STOP_FOREGROUND_REMOVE); bgThread.quitSafely(); super.onDestroy()
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "ScreenCaptureChannel",
-                "Screen Capture Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            val channel = NotificationChannel("ScreenCaptureChannel", "Screen Capture", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 }

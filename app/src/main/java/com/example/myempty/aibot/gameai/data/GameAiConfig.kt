@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 data class GameSettings(
@@ -48,11 +49,11 @@ data class GameSettings(
     val audioRadar: Boolean = false,
     val minimizeOnStart: Boolean = false,
     val modelInputSize: Int = 256,
-    val fovFraction: Float = 0.35f,  // 35% = ~450px radius ใช้ reference max = 1280px
+    val fovFraction: Float = 0.25f,  // 25% = ~320px radius
 ) {
     val aimTargets: Set<String>
         get() = when (gameId) {
-            "valorant" -> setOf("agent_head")
+            "valorant" -> setOf("Enemy", "head", "body")
             "crossfire" -> setOf("character", "head", "headshot")
             "pubg", "codm" -> setOf("head", "headshot")
             else -> setOf("head")
@@ -157,6 +158,9 @@ class GameAiConfig(private val context: Context) {
             )
         }
     }
+
+    suspend fun getCurrentSettingsSync(gameId: String): GameSettings = getSettings(gameId).first()
+
 
     suspend fun updateExpertSettings(raw: Boolean, bgr: Boolean, flip: Boolean, grid: Boolean) {
         context.dataStore.edit { p ->

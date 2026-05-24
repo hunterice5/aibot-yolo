@@ -34,7 +34,8 @@ class OverlayService : android.app.Service() {
         @Volatile var currentFps: Float = 0f
         @Volatile var currentLatencyMs: Double = 0.0
         @Volatile var currentDetectionCount: Int = 0
-        @Volatile var backendName: String = "CPU"
+        @Volatile var backendName: String = "IDLE"
+        @Volatile var statusMessage: String = "WAITING"
         
         var overlayInstance: OverlayService? = null
             private set
@@ -43,11 +44,11 @@ class OverlayService : android.app.Service() {
     data class OverlaySettings(
         val showDetectionBoxes: Boolean = true,
         val showFPS: Boolean = true,
-        val confidenceThreshold: Float = 0.35f,
-        val selectedModelId: String = "fortnite",
+        val confidenceThreshold: Float = 0.73f,
+        val selectedModelId: String = "valorant",
         val useRawPixels: Boolean = true,
         val useBGR: Boolean = false,
-        val flipY: Boolean = true,
+        val flipY: Boolean = false,
         val useGridCorrection: Boolean = false,
         val aimSmoothness: Float = 0.5f,
         val captureResolution: Int = 256,
@@ -76,11 +77,20 @@ class OverlayService : android.app.Service() {
         createNotificationChannel()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         
-        // Start as foreground immediately to prevent system from killing the service
         val notification = buildNotification()
         startForeground(NOTIFICATION_ID, notification)
         
         observeSettings()
+        startUiUpdateLoop()
+    }
+
+    private fun startUiUpdateLoop() {
+        serviceScope.launch {
+            while (isActive) {
+                menuView?.postInvalidate()
+                delay(500) // Update stats every 500ms
+            }
+        }
     }
 
     private fun observeSettings() {
@@ -170,14 +180,16 @@ class OverlayService : android.app.Service() {
             canvas.drawCircle(cx, cy, fovPx, fovPaint)
 
             if (!GameAiEngine.isRunning) return
+            
+            // Force redraw for smooth FPS on detections
+            postInvalidateDelayed(16) 
+
             for (det in currentDetections) {
                 boxPaint.color = if (det.isTarget) Color.GREEN else Color.RED
                 canvas.drawRect(det.x, det.y, det.x + det.w, det.y + det.h, boxPaint)
                 canvas.drawText("${det.className} ${(det.confidence*100).toInt()}%", det.x, det.y - 5, textPaint)
                 
-                // Draw aim point for the target
                 if (det.isTarget) {
-                    // This uses the ratio defined in CoordinateMapper (usually 0.3 for head/neck)
                     val aimX = det.x + det.w * 0.5f
                     val aimY = det.y + det.h * 0.3f 
                     canvas.drawCircle(aimX, aimY, 6f, aimPointPaint)
@@ -188,27 +200,68 @@ class OverlayService : android.app.Service() {
 
     private inner class FloatingMenuView(context: Context) : View(context) {
         private var dragX = 0f; private var dragY = 0f; private var isDragging = false
+        private var activeSliderKey: String? = null
         private val bgPaint = Paint().apply { color = Color.parseColor("#EE1A1A2E"); style = Style.FILL; isAntiAlias = true }
         private val hitBoxes = mutableMapOf<String, RectF>()
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    activeSliderKey = null
                     for (entry in hitBoxes) {
                         if (entry.value.contains(e.x, e.y)) {
-                            handleAction(entry.key); postInvalidate(); return true
+                            if (entry.key.startsWith("slide_")) {
+                                activeSliderKey = entry.key
+                                updateSliderValue(entry.key, e.x)
+                            } else {
+                                handleAction(entry.key)
+                            }
+                            postInvalidate(); return true
                         }
                     }
                     if (e.y < 50) { isDragging = true; dragX = e.rawX - (layoutParams as LayoutParams).x; dragY = e.rawY - (layoutParams as LayoutParams).y }
                 }
-                MotionEvent.ACTION_MOVE -> if (isDragging) {
-                    val lp = layoutParams as LayoutParams
-                    lp.x = (e.rawX - dragX).toInt(); lp.y = (e.rawY - dragY).toInt().coerceAtLeast(0)
-                    windowManager.updateViewLayout(this, lp)
+                MotionEvent.ACTION_MOVE -> {
+                    if (isDragging) {
+                        val lp = layoutParams as LayoutParams
+                        lp.x = (e.rawX - dragX).toInt(); lp.y = (e.rawY - dragY).toInt().coerceAtLeast(0)
+                        windowManager.updateViewLayout(this, lp)
+                    } else if (activeSliderKey != null) {
+                        updateSliderValue(activeSliderKey!!, e.x)
+                        postInvalidate()
+                    }
                 }
-                MotionEvent.ACTION_UP -> isDragging = false
+                MotionEvent.ACTION_UP -> {
+                    isDragging = false
+                    activeSliderKey = null
+                }
             }
             return true
+        }
+
+        private fun updateSliderValue(key: String, touchX: Float) {
+            val bx = 120f; val bw = 160f
+            val ratio = ((touchX - bx) / bw).coerceIn(0f, 1f)
+            
+            when (key) {
+                "slide_fov" -> {
+                    val v = 0.05f + ratio * (0.5f - 0.05f)
+                    settings = settings.copy(fovFraction = v)
+                    serviceScope.launch { config.updateFovFraction(v) }
+                }
+                "slide_conf" -> {
+                    val v = 0.01f + ratio * (0.95f - 0.01f)
+                    settings = settings.copy(confidenceThreshold = v)
+                    // Update only local for live feel, persistence in GameAiEngine loop
+                    serviceScope.launch { config.updateExpertSettings(settings.useRawPixels, settings.useBGR, settings.flipY, settings.useGridCorrection) }
+                }
+                "slide_res" -> {
+                    val v = (128f + ratio * (640f - 128f)).toInt()
+                    ScreenCaptureService.captureBaseSize = v
+                    // Res requires restart, but we handle it in engine
+                    serviceScope.launch { config.updateModelSize(v) }
+                }
+            }
         }
 
         private fun handleAction(key: String) {
@@ -217,31 +270,46 @@ class OverlayService : android.app.Service() {
                     if (GameAiEngine.isRunning) GameAiEngine.stopActiveSession("ui")
                     else GameAiEngine.start(context, settings.selectedModelId)
                 }
+                key == "be_onnx" -> { 
+                    val wasRunning = GameAiEngine.isRunning
+                    settings = settings.copy(inferenceBackend = "ONNX")
+                    serviceScope.launch { config.updateInferenceBackend("ONNX") }
+                    if (wasRunning) { GameAiEngine.stopActiveSession("switch_be"); GameAiEngine.start(context, settings.selectedModelId) }
+                }
+                key == "be_tflite" -> { 
+                    val wasRunning = GameAiEngine.isRunning
+                    settings = settings.copy(inferenceBackend = "LITERT")
+                    serviceScope.launch { config.updateInferenceBackend("LITERT") }
+                    if (wasRunning) { GameAiEngine.stopActiveSession("switch_be"); GameAiEngine.start(context, settings.selectedModelId) }
+                }
                 key == "exp_raw" -> { val v = !settings.useRawPixels; settings = settings.copy(useRawPixels = v); serviceScope.launch { config.updateExpertSettings(v, settings.useBGR, settings.flipY, settings.useGridCorrection) } }
                 key == "exp_flip" -> { val v = !settings.flipY; settings = settings.copy(flipY = v); serviceScope.launch { config.updateExpertSettings(settings.useRawPixels, settings.useBGR, v, settings.useGridCorrection) } }
-                key == "exp_bgr" -> { val v = !settings.useBGR; settings = settings.copy(useBGR = v); serviceScope.launch { config.updateExpertSettings(settings.useRawPixels, v, settings.flipY, settings.useGridCorrection) } }
                 key == "exp_grid" -> { val v = !settings.useGridCorrection; settings = settings.copy(useGridCorrection = v); serviceScope.launch { config.updateExpertSettings(settings.useRawPixels, settings.useBGR, settings.flipY, v) } }
-                key == "model_fort" -> { settings = settings.copy(selectedModelId = "fortnite"); GameAiEngine.stopActiveSession("switch") }
-                key == "model_val" -> { settings = settings.copy(selectedModelId = "valorant"); GameAiEngine.stopActiveSession("switch") }
-                key.startsWith("slide_") -> {} // Handled in touch (to be added)
+                key == "model_val" -> { 
+                    val wasRunning = GameAiEngine.isRunning
+                    settings = settings.copy(selectedModelId = "valorant")
+                    if (wasRunning) { GameAiEngine.stopActiveSession("switch"); GameAiEngine.start(context, "valorant") }
+                }
             }
         }
 
-        override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(320, 680)
+        override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(320, 780)
 
         override fun onDraw(canvas: Canvas) {
             hitBoxes.clear()
             canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), 20f, 20f, bgPaint)
             val p = Paint().apply { color = Color.WHITE; textSize = 22f; isAntiAlias = true }
-            canvas.drawText("YOLO HUD", 20f, 40f, p)
             
-            val fpsColor = if (currentFps > 30) Color.GREEN else Color.RED
-            canvas.drawText("FPS: %.1f".format(currentFps), 20f, 70f, p.apply { this.color = fpsColor })
+            // STATUS LINE
+            canvas.drawText("YOLO HUD - $statusMessage", 20f, 40f, p)
+            
+            val fpsColor = if (currentFps > 30) Color.GREEN else (if (currentFps > 5) Color.YELLOW else Color.RED)
+            canvas.drawText("FPS: %.1f (%s)".format(currentFps, backendName), 20f, 70f, p.apply { this.color = fpsColor })
             canvas.drawText("Lat: %.1fms | Det: $currentDetectionCount".format(currentLatencyMs), 130f, 70f, p.apply { this.color = Color.WHITE })
 
             val isRunning = GameAiEngine.isRunning
             val btnColor = if (isRunning) Color.parseColor("#FF4444") else Color.parseColor("#44FF44")
-            drawBtn(canvas, 20f, 90f, 300f, 150f, if (isRunning) "STOP" else "START", btnColor, "toggle_engine")
+            drawBtn(canvas, 20f, 90f, 300f, 150f, if (isRunning) "STOP AI" else "START AI", btnColor, "toggle_engine")
 
             var y = 190f
             drawSlider(canvas, 20f, y, "FOV", settings.fovFraction, 0.05f, 0.5f, "slide_fov"); y += 60f
@@ -252,9 +320,12 @@ class OverlayService : android.app.Service() {
             drawToggle(canvas, 20f, y, "Flip Y", settings.flipY, "exp_flip"); y += 50f
             drawToggle(canvas, 20f, y, "Auto Aim", settings.useGridCorrection, "exp_grid"); y += 50f
 
-            canvas.drawText("Model:", 20f, y, p.apply { textSize = 20f }); y += 35f
-            drawPill(canvas, 20f, y, 150f, y + 40f, "FORT", settings.selectedModelId == "fortnite", "model_fort")
-            drawPill(canvas, 170f, y, 300f, y + 40f, "VAL", settings.selectedModelId == "valorant", "model_val")
+            canvas.drawText("Game:", 20f, y, p.apply { textSize = 20f; color = Color.WHITE }); y += 35f
+            drawPill(canvas, 20f, y, 300f, y + 40f, "VALORANT (valo)", settings.selectedModelId == "valorant", "model_val"); y += 65f
+
+            canvas.drawText("Backend:", 20f, y, p.apply { textSize = 20f }); y += 35f
+            drawPill(canvas, 20f, y, 150f, y + 40f, "ONNX", settings.inferenceBackend == "ONNX", "be_onnx")
+            drawPill(canvas, 170f, y, 300f, y + 40f, "TFLITE", settings.inferenceBackend == "LITERT", "be_tflite")
         }
 
         private fun drawSlider(c: Canvas, x: Float, y: Float, l: String, v: Float, s: Float, e: Float, key: String) {
@@ -264,7 +335,7 @@ class OverlayService : android.app.Service() {
             c.drawRect(bx, y + 5f, bx + bw, y + 12f, Paint().apply { this.color = Color.DKGRAY })
             val ratio = ((v - s) / (e - s)).coerceIn(0f, 1f)
             c.drawRect(bx, y + 5f, bx + bw * ratio, y + 12f, Paint().apply { this.color = Color.CYAN })
-            hitBoxes[key] = RectF(bx - 20, y - 10, bx + bw + 20, y + 30)
+            hitBoxes[key] = RectF(bx - 40, y - 20, bx + bw + 40, y + 40) // Larger hitboxes for sliders
         }
 
         private fun drawBtn(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, txt: String, color: Int, key: String) {

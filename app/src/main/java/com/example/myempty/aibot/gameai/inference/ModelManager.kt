@@ -21,22 +21,19 @@ class ModelManager(private val context: Context) {
         )
 
         val MODEL_CATALOG = mapOf(
-            // Valorant-trained model
-            "valorant" to GameModel("best_npu", "Valorant", 256, listOf("enemy")),
-            "crossfire" to GameModel("cf_int8", "CrossFire", 256, listOf("character")),
-            "codm" to GameModel("codm_int8", "Call of Duty Mobile", 256, listOf("enemy")),
-            "fortnite" to GameModel("best_PfYipLn", "Fortnite", 256, listOf("enemy")),
+            // Valorant-trained model v3 (6 classes from Kaggle logs)
+            "valorant" to GameModel("valo", "Valorant", 320, listOf("0", "1", "Enemy", "body", "head", "person")),
         )
-    }
+        }
 
-    data class GameModel(val fileName: String, val displayName: String, val inputSize: Int, val classLabels: List<String>)
+        data class GameModel(val fileName: String, val displayName: String, val inputSize: Int, val classLabels: List<String>)
 
-    private val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
+        private val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
 
-    fun isModelDownloaded(gameId: String): Boolean {
+        fun isModelDownloaded(gameId: String): Boolean {
         val model = MODEL_CATALOG[gameId] ?: return false
-        return File(modelsDir, "${model.fileName}.tflite").exists()
-    }
+        return File(modelsDir, "${model.fileName}.onnx").exists() || File(modelsDir, "${model.fileName}.tflite").exists()
+        }
 
     suspend fun downloadModel(gameId: String, modelUrl: String): Result<File> = withContext(Dispatchers.IO) {
         val model = MODEL_CATALOG[gameId]
@@ -98,12 +95,12 @@ class ModelManager(private val context: Context) {
         }
     }
 
-    fun getModelPath(gameId: String): String? {
+    fun getModelPath(gameId: String, preferredExt: String = ""): String? {
         val model = MODEL_CATALOG[gameId] ?: MODEL_CATALOG["custom"] ?: return null
         val fileName = model.fileName
         
-        // Try to find either .tflite or .onnx file
-        val extensions = listOf(".tflite", ".onnx")
+        // Use preferred extension if provided, otherwise try standard ones
+        val extensions = if (preferredExt.isNotEmpty()) listOf(preferredExt) else listOf(".tflite", ".onnx")
         
         for (ext in extensions) {
             val f = File(modelsDir, fileName + ext)
@@ -121,13 +118,13 @@ class ModelManager(private val context: Context) {
                 if (foundAsset != null) break
             }
             
-            if (foundAsset == null) {
+            if (foundAsset == null && preferredExt.isEmpty()) {
                 // Last resort: find any model file in assets
                 foundAsset = assetNames.firstOrNull { it.endsWith(".tflite", ignoreCase = true) || it.endsWith(".onnx", ignoreCase = true) }
             }
 
             if (foundAsset == null) {
-                Log.e(TAG, "No model file (.tflite or .onnx) found in assets/")
+                Log.e(TAG, "No model file matching '$fileName' with ext '$preferredExt' found in assets/")
                 return null
             }
 

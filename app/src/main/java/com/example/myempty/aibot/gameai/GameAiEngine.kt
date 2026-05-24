@@ -7,6 +7,8 @@ import com.example.myempty.aibot.gameai.inference.*
 import com.example.myempty.aibot.gameai.touch.TouchInjector
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlin.math.hypot
 
 class GameAiEngine(private val appCtx: android.content.Context) {
@@ -46,7 +48,7 @@ class GameAiEngine(private val appCtx: android.content.Context) {
     private val frameLock = Any()
     private var lastBitmap: Bitmap? = null
     
-    private var activeGameId = "fortnite"
+    private var activeGameId = "valorant"
     private var coordinateMapper: CoordinateMapper? = null
     
     private var realW = 2560
@@ -72,40 +74,53 @@ class GameAiEngine(private val appCtx: android.content.Context) {
 
         gameJob = engineScope.launch {
             try {
-                val modelPath = modelManager.getModelPath(gameId) ?: return@launch
+                // Only restart when Backend or Model changes
+                config.getSettings(gameId)
+                    .map { s -> s.gameId + s.inferenceBackend }
+                    .distinctUntilChanged()
+                    .collectLatest { _ ->
+                        val settings = config.getCurrentSettingsSync(gameId)
+                        val preferredExt = if (settings.inferenceBackend == "ONNX") ".onnx" else ".tflite"
+                        
+                        OverlayService.statusMessage = "LOADING MODEL..."
+                        val modelPath = modelManager.getModelPath(gameId, preferredExt) ?: return@collectLatest
 
-                config.getSettings(gameId).collectLatest { settings ->
-                    val actualBackend = if (modelPath.endsWith(".onnx", true)) "ONNX" else settings.inferenceBackend
-                    val inferenceService: InferenceService = if (actualBackend == "ONNX") onnxService else liteRtService
-                    
-                    inferenceService.setClassLabels(modelManager.getClassLabels(gameId))
+                        val actualBackend = if (modelPath.endsWith(".onnx", true)) "ONNX" else settings.inferenceBackend
+                        val inferenceService: InferenceService = if (actualBackend == "ONNX") onnxService else liteRtService
+                        
+                        inferenceService.setClassLabels(modelManager.getClassLabels(gameId))
 
-                    val scW2 = com.example.myempty.aibot.ScreenCaptureService.realDisplayW
-                    val scH2 = com.example.myempty.aibot.ScreenCaptureService.realDisplayH
-                    if (scW2 > 0 && scH2 > 0) { realW = scW2; realH = scH2 }
-                    
-                    val captureW = com.example.myempty.aibot.ScreenCaptureService.captureBaseSize
-                    val captureH = (realH * captureW / realW).coerceIn(captureW / 2, captureW * 2)
+                        val scW2 = com.example.myempty.aibot.ScreenCaptureService.realDisplayW
+                        val scH2 = com.example.myempty.aibot.ScreenCaptureService.realDisplayH
+                        if (scW2 > 0 && scH2 > 0) { realW = scW2; realH = scH2 }
+                        
+                        val captureW = com.example.myempty.aibot.ScreenCaptureService.captureBaseSize
+                        val captureH = (realH * captureW / realW).coerceIn(captureW / 2, captureW * 2)
 
-                    coordinateMapper = CoordinateMapper(
-                        screenWidth = realW, screenHeight = realH,
-                        modelWidth = captureW, modelHeight = captureH,
-                        flipY = settings.flipY
-                    )
+                        coordinateMapper = CoordinateMapper(
+                            screenWidth = realW, screenHeight = realH,
+                            modelWidth = captureW, modelHeight = captureH,
+                            flipY = settings.flipY
+                        )
 
-                    if (inferenceService.loadModel(modelPath, settings)) {
-                        OverlayService.backendName = if (actualBackend == "ONNX") "ONNX Runtime" else "LiteRT+NNAPI"
-                        runInferenceLoop(settings, inferenceService)
+                        OverlayService.statusMessage = "COMPILING NPU..."
+                        if (inferenceService.loadModel(modelPath, settings)) {
+                            OverlayService.backendName = if (actualBackend == "ONNX") "ONNX+NNAPI" else "LiteRT+NNAPI"
+                            OverlayService.statusMessage = "ACTIVE"
+                            runInferenceLoop(inferenceService)
+                        } else {
+                            OverlayService.statusMessage = "LOAD FAILED"
+                        }
                     }
-                }
             } catch (e: Exception) {
                 Log.e(TAG, "Engine error", e)
+                OverlayService.statusMessage = "ERROR: ${e.message}"
                 isRunning = false
             }
         }
     }
 
-    private suspend fun runInferenceLoop(settings: GameSettings, inferenceService: InferenceService) {
+    private suspend fun runInferenceLoop(inferenceService: InferenceService) {
         var frames = 0
         var lastFpsTime = System.currentTimeMillis()
         val screenCenterX = realW / 2f
@@ -121,58 +136,73 @@ class GameAiEngine(private val appCtx: android.content.Context) {
 
                 if (bitmap != null) {
                     val startTime = System.currentTimeMillis()
-                    val overlayS = OverlayService.overlayInstance?.settings
+                    // Get LIVE settings from UI without restarting the loop
+                    val liveS = OverlayService.overlayInstance?.settings ?: continue
                     
-                    val liveSettings = settings.copy(
-                        confidenceThreshold = overlayS?.confidenceThreshold ?: settings.confidenceThreshold,
-                        useRawPixels = overlayS?.useRawPixels ?: settings.useRawPixels,
-                        useBGR = overlayS?.useBGR ?: settings.useBGR,
-                        flipY = overlayS?.flipY ?: settings.flipY,
-                        useGridCorrection = overlayS?.useGridCorrection ?: settings.useGridCorrection,
-                        fovFraction = overlayS?.fovFraction ?: settings.fovFraction
+                    val settings = GameSettings(
+                        confidenceThreshold = liveS.confidenceThreshold,
+                        useRawPixels = liveS.useRawPixels,
+                        useBGR = liveS.useBGR,
+                        flipY = liveS.flipY,
+                        fovFraction = liveS.fovFraction,
+                        useGridCorrection = liveS.useGridCorrection
                     )
 
-                    coordinateMapper = coordinateMapper?.copy(flipY = liveSettings.flipY)
+                    coordinateMapper = coordinateMapper?.copy(flipY = settings.flipY)
 
-                    val detections = inferenceService.runInference(bitmap, liveSettings)
+                    val detections = inferenceService.runInference(bitmap, settings)
                     
                     val lbOffX = com.example.myempty.aibot.ScreenCaptureService.letterboxOffsetX.toFloat()
                     val lbOffY = com.example.myempty.aibot.ScreenCaptureService.letterboxOffsetY.toFloat()
                     val lbScale = com.example.myempty.aibot.ScreenCaptureService.letterboxScale
 
-                    val screenDetections = detections.map { det ->
-                        // Calculate CENTER in model pixels first
-                        val modelCenterX = det.x + det.w / 2f
-                        val modelCenterY = det.y + det.h / 2f
+                    val screenDetections = detections.filter { det ->
+                        val targetNames = config.getCurrentSettingsSync(gameId).aimTargets
+                        targetNames.contains(det.className) || det.className.equals("Enemy", ignoreCase=true) || det.className.equals("head", ignoreCase=true)
+                    }.map { det ->
+                        // 1. Get detected coordinates in model space (0..modelSize)
+                        // Note: det.x, det.y are TOP-LEFT.
+                        val modelX = det.x
+                        val modelY = det.y
+                        val modelW = det.w
+                        val modelH = det.h
 
-                        // Map CENTER back to capture pixels (handling letterbox)
-                        val capCenterX = (modelCenterX - lbOffX) / lbScale
-                        val capCenterY = (modelCenterY - lbOffY) / lbScale
+                        // 2. Remove Letterbox (Black bars) to get coordinates in CAPTURE space
+                        val capX = (modelX - lbOffX) / lbScale
+                        val capY = (modelY - lbOffY) / lbScale
+                        val capW = modelW / lbScale
+                        val capH = modelH / lbScale
 
-                        // Map to REAL screen pixels
-                        val screenPos = coordinateMapper?.mapToScreen(capCenterX, capCenterY) ?: Pair(0f, 0f)
-                        val centerX = screenPos.first
-                        val centerY = screenPos.second
-
+                        // 3. Map CAPTURE space to REAL SCREEN space
+                        // Formulas: screenX = (capX / capW_total) * realW
                         val mapper = coordinateMapper
-                        val sW = if (mapper != null) (det.w / lbScale) * (realW.toFloat() / mapper.modelWidth) else 100f
-                        val sH = if (mapper != null) (det.h / lbScale) * (realH.toFloat() / mapper.modelHeight) else 100f
+                        val modelTotalW = mapper?.modelWidth?.toFloat() ?: 640f
+                        val modelTotalH = mapper?.modelHeight?.toFloat() ?: 400f
+                        
+                        val screenX = (capX / modelTotalW) * realW
+                        val screenY = (capY / modelTotalH) * realH
+                        val screenW = (capW / modelTotalW) * realW
+                        val screenH = (capH / modelTotalH) * realH
 
+                        val centerX = screenX + screenW / 2f
+                        val centerY = screenY + screenH / 2f
+                        
                         val dist = hypot(centerX - screenCenterX, centerY - screenCenterY)
-                        val fovRadius = maxOf(realW, realH) / 2f * liveSettings.fovFraction
+                        val fovRadius = maxOf(realW, realH) / 2f * settings.fovFraction
                         val isInsideFov = dist <= fovRadius
 
                         ScreenDetection(
-                            x = centerX - sW / 2f,
-                            y = centerY - sH / 2f,
-                            w = sW,
-                            h = sH,
+                            x = screenX,
+                            y = screenY,
+                            w = screenW,
+                            h = screenH,
                             confidence = det.confidence,
                             classId = det.classId,
                             className = det.className,
                             isTarget = isInsideFov
                         )
                     }
+
                     currentLatency = (System.currentTimeMillis() - startTime).toDouble()
                     detectionCount = screenDetections.size
                     
@@ -189,17 +219,13 @@ class GameAiEngine(private val appCtx: android.content.Context) {
                     OverlayService.currentDetectionCount = detectionCount
                     OverlayService.overlayInstance?.updateDetections(screenDetections)
 
-                    // ====== AUTO-AIM LOGIC START ======
+                    // AUTO-AIM
                     val target = screenDetections.filter { it.isTarget }.maxByOrNull { it.confidence }
                     if (target != null) {
                         val aimX = target.x + target.w * (coordinateMapper?.aimXRatio ?: 0.5f)
                         val aimY = target.y + target.h * (coordinateMapper?.aimYRatio ?: 0.3f)
                         
-                        if (frames % 30 == 0) {
-                            Log.i(TAG, "Aiming at Screen: X=${aimX.toInt()}, Y=${aimY.toInt()}")
-                        }
-
-                        if (liveSettings.useGridCorrection) {
+                        if (settings.useGridCorrection) {
                             if (touchInjector.isDown()) {
                                 touchInjector.continuousMove(aimX, aimY)
                             } else {
@@ -207,11 +233,8 @@ class GameAiEngine(private val appCtx: android.content.Context) {
                             }
                         }
                     } else {
-                        if (touchInjector.isDown()) {
-                            touchInjector.continuousUp()
-                        }
+                        if (touchInjector.isDown()) touchInjector.continuousUp()
                     }
-                    // ====== AUTO-AIM LOGIC END ======
                 }
                 delay(1)
             }
@@ -228,5 +251,6 @@ class GameAiEngine(private val appCtx: android.content.Context) {
         isRunning = false
         gameJob?.cancel()
         com.example.myempty.aibot.ScreenCaptureService.frameListener = null
+        OverlayService.statusMessage = "STOPPED"
     }
 }
