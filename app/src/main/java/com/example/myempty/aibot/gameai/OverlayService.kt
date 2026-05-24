@@ -75,7 +75,11 @@ class OverlayService : android.app.Service() {
         config = GameAiConfig(this)
         createNotificationChannel()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        startForeground(NOTIFICATION_ID, buildNotification())
+        
+        // Start as foreground immediately to prevent system from killing the service
+        val notification = buildNotification()
+        startForeground(NOTIFICATION_ID, notification)
+        
         observeSettings()
     }
 
