@@ -188,8 +188,9 @@ class GameAiEngine(private val appCtx: android.content.Context) {
                 // ====== AUTO-AIM LOGIC START ======
                 val target = screenDetections.filter { it.isTarget }.maxByOrNull { it.confidence }
                 if (target != null) {
-                    val aimX = target.x + target.w / 2f
-                    val aimY = target.y + target.h / 2f
+                    // Use adjustable aim ratios (aimXRatio=0.5, aimYRatio=0.3)
+                    val aimX = target.x + target.w * (coordinateMapper?.aimXRatio ?: 0.5f)
+                    val aimY = target.y + target.h * (coordinateMapper?.aimYRatio ?: 0.3f)
                     
                     if (liveSettings.useGridCorrection) { // Using this flag as 'AutoAim' toggle
                         if (touchInjector.isDown()) {

@@ -162,6 +162,7 @@ class OverlayService : android.app.Service() {
         private val boxPaint = Paint().apply { style = Style.STROKE; strokeWidth = 3f; isAntiAlias = true }
         private val textPaint = Paint().apply { textSize = 28f; color = Color.WHITE; isAntiAlias = true }
         private val fovPaint = Paint().apply { style = Style.STROKE; strokeWidth = 1f; color = Color.argb(80, 0, 255, 0); isAntiAlias = true }
+        private val aimPointPaint = Paint().apply { color = Color.YELLOW; style = Style.FILL; isAntiAlias = true }
         
         override fun onDraw(canvas: Canvas) {
             val cx = width / 2f; val cy = height / 2f
@@ -173,6 +174,14 @@ class OverlayService : android.app.Service() {
                 boxPaint.color = if (det.isTarget) Color.GREEN else Color.RED
                 canvas.drawRect(det.x, det.y, det.x + det.w, det.y + det.h, boxPaint)
                 canvas.drawText("${det.className} ${(det.confidence*100).toInt()}%", det.x, det.y - 5, textPaint)
+                
+                // Draw aim point for the target
+                if (det.isTarget) {
+                    // This uses the ratio defined in CoordinateMapper (usually 0.3 for head/neck)
+                    val aimX = det.x + det.w * 0.5f
+                    val aimY = det.y + det.h * 0.3f 
+                    canvas.drawCircle(aimX, aimY, 6f, aimPointPaint)
+                }
             }
         }
     }
