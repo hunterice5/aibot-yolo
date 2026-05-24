@@ -141,19 +141,23 @@ class GameAiEngine(private val appCtx: android.content.Context) {
                     val lbScale = com.example.myempty.aibot.ScreenCaptureService.letterboxScale
 
                     val screenDetections = detections.map { det ->
-                        val capX = (det.x - lbOffX) / lbScale
-                        val capY = (det.y - lbOffY) / lbScale
-                        val capW = det.w / lbScale
-                        val capH = det.h / lbScale
+                        // Calculate CENTER in model pixels first
+                        val modelCenterX = det.x + det.w / 2f
+                        val modelCenterY = det.y + det.h / 2f
 
-                        val screenPos = coordinateMapper?.mapToScreen(capX, capY) ?: Pair(0f, 0f)
-                        val mapper = coordinateMapper
-                        val sW = if (mapper != null) capW * (realW.toFloat() / mapper.modelWidth) else 100f
-                        val sH = if (mapper != null) capH * (realH.toFloat() / mapper.modelHeight) else 100f
+                        // Map CENTER back to capture pixels (handling letterbox)
+                        val capCenterX = (modelCenterX - lbOffX) / lbScale
+                        val capCenterY = (modelCenterY - lbOffY) / lbScale
 
+                        // Map to REAL screen pixels
+                        val screenPos = coordinateMapper?.mapToScreen(capCenterX, capCenterY) ?: Pair(0f, 0f)
                         val centerX = screenPos.first
                         val centerY = screenPos.second
-                        
+
+                        val mapper = coordinateMapper
+                        val sW = if (mapper != null) (det.w / lbScale) * (realW.toFloat() / mapper.modelWidth) else 100f
+                        val sH = if (mapper != null) (det.h / lbScale) * (realH.toFloat() / mapper.modelHeight) else 100f
+
                         val dist = hypot(centerX - screenCenterX, centerY - screenCenterY)
                         val fovRadius = maxOf(realW, realH) / 2f * liveSettings.fovFraction
                         val isInsideFov = dist <= fovRadius
@@ -169,7 +173,6 @@ class GameAiEngine(private val appCtx: android.content.Context) {
                             isTarget = isInsideFov
                         )
                     }
-
                     currentLatency = (System.currentTimeMillis() - startTime).toDouble()
                     detectionCount = screenDetections.size
                     

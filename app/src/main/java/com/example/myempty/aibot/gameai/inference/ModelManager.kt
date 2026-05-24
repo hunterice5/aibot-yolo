@@ -22,7 +22,7 @@ class ModelManager(private val context: Context) {
 
         val MODEL_CATALOG = mapOf(
             // Valorant-trained model
-            "valorant" to GameModel("valo", "Valorant", 256, listOf("enemy")),
+            "valorant" to GameModel("best_npu", "Valorant", 256, listOf("enemy")),
             "crossfire" to GameModel("cf_int8", "CrossFire", 256, listOf("character")),
             "codm" to GameModel("codm_int8", "Call of Duty Mobile", 256, listOf("enemy")),
             "fortnite" to GameModel("best_PfYipLn", "Fortnite", 256, listOf("enemy")),

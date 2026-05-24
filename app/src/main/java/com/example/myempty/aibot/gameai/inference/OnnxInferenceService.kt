@@ -87,10 +87,20 @@ class OnnxInferenceService(private val appContext: Context) : InferenceService {
 
             ortSession = ortEnv?.createSession(modelBytes, sessionOptions)
 
+            // Auto-detect input size from model metadata
             ortSession?.inputInfo?.forEach { (name, info) ->
                 val v = info.info
                 if (v is TensorInfo) {
                     Log.i(TAG, "Input '$name': shape=${v.shape.joinToString()}, type=${v.type}")
+                    if (v.shape.size >= 4) {
+                        // shape usually [1, 3, height, width]
+                        val h = v.shape[2].toInt()
+                        val w = v.shape[3].toInt()
+                        if (h > 0 && w > 0) {
+                            modelInputSize = maxOf(h, w)
+                            Log.i(TAG, "Auto-detected model input size: $modelInputSize")
+                        }
+                    }
                 }
             }
 
