@@ -6,8 +6,8 @@ import android.graphics.Bitmap
  * Data model for a single detection result from YOLO model.
  */
 data class Detection(
-    val x: Float,          // center X in model coordinates
-    val y: Float,          // center Y in model coordinates
+    val x: Float,          // top-left X in model coordinates
+    val y: Float,          // top-left Y in model coordinates
     val w: Float,          // width in model coordinates
     val h: Float,          // height in model coordinates
     val confidence: Float, // detection confidence [0.0, 1.0]

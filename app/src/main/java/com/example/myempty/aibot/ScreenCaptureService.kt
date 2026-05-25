@@ -56,7 +56,11 @@ class ScreenCaptureService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .build()
 
-        startForeground(1, notification)
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(1, notification)
+        }
 
         val resultCode = intent?.getIntExtra("RESULT_CODE", lastResultCode) ?: lastResultCode
         val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -86,6 +90,8 @@ class ScreenCaptureService : Service() {
         var lastResultData: Intent? = null
 
         @Volatile var targetModelSize: Int = 640 // Default to high res for Valo
+        /** User-adjustable capture base resolution (128-640, default=320) */
+        @Volatile var captureBaseSize: Int = 320
         @Volatile var realDisplayW: Int = 0
         @Volatile var realDisplayH: Int = 0
         @Volatile var letterboxOffsetX: Int = 0
@@ -137,6 +143,14 @@ class ScreenCaptureService : Service() {
                     frameCount = 0; lastTime = now; lastFpsTime = now
                 }
                 image.close()
+            }
+        }, bgHandler)
+
+        // Mandatory callback for Android 14+ to manage resources
+        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.i(TAG, "MediaProjection Stopped")
+                stopCapture()
             }
         }, bgHandler)
 
@@ -193,13 +207,23 @@ class ScreenCaptureService : Service() {
                 fullBmp!!.copyPixelsFromBuffer(cleanBuffer)
             }
 
-            val scale = minOf(targetSize.toFloat() / srcW, targetSize.toFloat() / srcH)
-            val scaledW = (srcW * scale).toInt()
-            val scaledH = (srcH * scale).toInt()
+            // 1. Calculate the mapping from REAL screen to TARGET model size
+            val captureScale = srcW.toFloat() / realDisplayW
+            val innerScale = minOf(targetSize.toFloat() / srcW, targetSize.toFloat() / srcH)
+            val totalScale = captureScale * innerScale
+
+            val scaledW = (srcW * innerScale).toInt()
+            val scaledH = (srcH * innerScale).toInt()
+            
+            // 2. Centering offsets in the target model canvas (e.g. 256x256)
             val offsetX = (targetSize - scaledW) / 2
             val offsetY = (targetSize - scaledH) / 2
 
-            letterboxOffsetX = offsetX; letterboxOffsetY = offsetY; letterboxScale = scale
+            // Store for engine: these are used to map model coords back to screen
+            // Formula: ScreenX = (ModelX - offsetX) / totalScale
+            letterboxOffsetX = offsetX
+            letterboxOffsetY = offsetY
+            letterboxScale = totalScale
 
             var targetBmp = targetSizeBitmap
             if (targetBmp == null || targetBmp.width != targetSize || targetBmp.height != targetSize) {
@@ -208,10 +232,13 @@ class ScreenCaptureService : Service() {
             }
             
             val canvas = android.graphics.Canvas(targetBmp!!)
-            canvas.drawColor(android.graphics.Color.BLACK) 
+            canvas.drawColor(android.graphics.Color.BLACK) // Letterbox padding color
+            
             val matrix = android.graphics.Matrix()
-            matrix.postScale(scale, scale)
+            // Matrix to draw full screen into the letterboxed area
+            matrix.postScale(innerScale, innerScale)
             matrix.postTranslate(offsetX.toFloat(), offsetY.toFloat())
+            
             canvas.drawBitmap(fullBmp!!, matrix, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
             targetBmp
         } catch (e: Exception) { null }
